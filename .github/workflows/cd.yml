@@ -1,0 +1,64 @@
+# Lab 2 / Q8 - Continuous deployment to Kubernetes
+# On every push to main, GitHub Actions:
+#   1. runs the unit tests
+#   2. builds the Docker image tagged with the commit SHA
+#   3. creates a throwaway Kubernetes cluster (kind) inside the runner
+#   4. deploys the manifests, waits for the rollout and smoke-tests the service
+#   5. rolls back automatically if the rollout fails
+name: lab2-cd
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: pytest -v
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-24.04
+    env:
+      IMAGE: lab2-web:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t "$IMAGE" .
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with: { cluster_name: lab2 }
+
+      - name: Load image into cluster
+        run: kind load docker-image "$IMAGE" --name lab2
+
+      - name: Deploy
+        run: |
+          kubectl apply -f k8s/configmap.yaml -f k8s/pv-pvc.yaml -f k8s/service.yaml
+          sed "s|image: lab2-web:1.0|image: ${IMAGE}|" k8s/deployment.yaml | kubectl apply -f -
+          kubectl annotate deployment/lab2-web kubernetes.io/change-cause="CD deploy ${GITHUB_SHA::7}" --overwrite
+
+      - name: Wait for rollout (roll back on failure)
+        run: |
+          if ! kubectl rollout status deployment/lab2-web --timeout=120s; then
+            kubectl describe pods -l app=lab2-web
+            kubectl rollout undo deployment/lab2-web || true
+            exit 1
+          fi
+
+      - name: Smoke test
+        run: |
+          kubectl get deploy,pods,svc -o wide
+          kubectl port-forward svc/lab2-web-svc 8080:80 &
+          sleep 5
+          curl -fs http://localhost:8080/ready
+          for i in 1 2 3; do curl -fs http://localhost:8080/; echo; done
