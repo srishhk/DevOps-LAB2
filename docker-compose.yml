@@ -1,0 +1,39 @@
+# Lab 2 - multi-container stack: Flask web app + Redis cache
+# Run:  docker compose up -d --build
+services:
+  web:
+    build: .
+    image: lab2-web:1.0
+    container_name: lab2-web
+    ports:
+      - "8000:5000"
+    environment:
+      REDIS_HOST: cache-service
+      APP_VERSION: "1.0"
+      GREETING: "Hello from Docker Compose"
+    depends_on:
+      cache-service:
+        condition: service_healthy
+    networks: [lab2-net]
+    restart: unless-stopped
+
+  cache-service:
+    image: redis:7-alpine
+    container_name: lab2-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks: [lab2-net]
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+
+networks:
+  lab2-net:
+    driver: bridge
